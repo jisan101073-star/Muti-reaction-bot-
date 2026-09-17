@@ -1,225 +1,251 @@
 import os
-import re
-import json
+import random
+import logging
 import asyncio
+import time
+import html
+import json
+import copy
+from threading import Thread
 
-# ----------------- CRITICAL FIX FOR PYTHON 3.14+ ----------------- #
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
+from flask import Flask
 
-# ----------------------------------------------------------------- #
 import firebase_admin
 from firebase_admin import credentials, db
-from pyrogram import Client, filters, enums, idle
-from pyrogram.raw import functions
 
-# ----------------- ENVIRONMENT VARIABLES ----------------- #
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-FIREBASE_URL = os.getenv("FIREBASE_URL", "")
-FIREBASE_CRED_JSON = os.getenv("FIREBASE_CRED", "")
-
-# ADMIN AUTHORIZATION
-ADMIN_IDS = [8223664417]
-
-env_admins = os.getenv("ADMIN_IDS", "")
-if env_admins:
-    for x in env_admins.split(","):
-        if x.strip().isdigit():
-            ADMIN_IDS.append(int(x.strip()))
-
-# ----------------- FIREBASE INITIALIZATION ----------------- #
-try:
-    if FIREBASE_CRED_JSON:
-        cred_dict = json.loads(FIREBASE_CRED_JSON)
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred, {
-            'databaseURL': FIREBASE_URL
-        })
-        print("✅ Firebase initialized successfully!")
-except Exception as e:
-    print(f"❌ Firebase initialization failed: {e}")
-
-# ----------------- BOT CLIENT (HTML Parse Mode Added) ----------------- #
-bot = Client(
-    "reaction_view_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    parse_mode=enums.ParseMode.HTML
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import RetryAfter
+from telegram.ext import (
+    Application,
+    MessageHandler,
+    CommandHandler,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    filters,
+    ContextTypes,
 )
+from dotenv import load_dotenv
 
-user_data = {}
+# =========================================================
+# CONFIG & FLASK SERVER FOR RENDER
+# =========================================================
 
-def get_sessions():
-    ref = db.reference('sessions')
-    sessions = ref.get()
-    if isinstance(sessions, dict):
-        return list(sessions.values())
-    elif isinstance(sessions, list):
-        return [s for s in sessions if s]
-    return []
+load_dotenv()
 
-def add_session_to_db(session_str):
-    ref = db.reference('sessions')
-    ref.push(session_str)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-def parse_tg_link(link: str):
-    pattern_private = r"https://t\.me/c/(\d+)/(\d+)"
-    pattern_public = r"https://t\.me/([^/]+)/(\d+)"
-    
-    match_private = re.match(pattern_private, link)
-    if match_private:
-        chat_id = int(f"-100{match_private.group(1)}")
-        msg_id = int(match_private.group(2))
-        return chat_id, msg_id
-        
-    match_public = re.match(pattern_public, link)
-    if match_public:
-        chat_id = match_public.group(1)
-        msg_id = int(match_public.group(2))
-        return chat_id, msg_id
-        
-    return None, None
+OWNER_ID = int(os.getenv("OWNER_ID", "8223664417"))
+IMAGE_URL = os.getenv("IMAGE_URL", "https://telegra.ph/file/07f45aef0cc6323c21c78.jpg")
+SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/Jr_Auto_ReactionBot")
 
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+# Render Port Binding Web Server
+app_flask = Flask(__name__)
 
-# ----------------- BOT HANDLERS ----------------- #
-@bot.on_message(filters.command("start"))
-async def start_cmd(client, message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.reply_text("❌ <b>Access Denied!</b>")
+@app_flask.route("/")
+def home():
+    return "Multi-Reaction Bot is online and running! 🚀"
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port)
+
+# Start Flask immediately to avoid Render Port Timeout
+Thread(target=run_server, daemon=True).start()
+
+# Default Reactions
+DEFAULT_EMOJIS = [
+    "👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱",
+    "🎉", "🤩", "🙏", "👌", "❤️‍🔥", "💯", "🤣", "⚡", "🏆", "😈"
+]
+
+# =========================================================
+# FIREBASE & DATABASE
+# =========================================================
+
+firebase_initialized = False
+
+def init_firebase():
+    global firebase_initialized
+    if firebase_initialized:
         return
 
-    user_data[user_id] = {"step": "WAITING_LINK"}
-    total_sessions = len(get_sessions())
-    await message.reply_text(
-        f"👋 <b>Reaction & View Bot-এ স্বাগতম! (Admin Panel)</b>\n\n"
-        f"📊 <b>ডাটাবেজে মোট সেশন আছে:</b> <code>{total_sessions}</code> টি\n\n"
-        f"কাজ শুরু করতে আপনার <b>চ্যানেল বা পোস্টের লিঙ্ক</b> দিন:"
+    database_url = os.getenv("FIREBASE_DATABASE_URL", "").strip()
+    service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+
+    if not database_url or not service_account_json:
+        logger.warning("Firebase credentials missing. Running in local memory mode.")
+        return
+
+    try:
+        service_account_data = json.loads(service_account_json)
+        cred = credentials.Certificate(service_account_data)
+        firebase_admin.initialize_app(cred, {"databaseURL": database_url})
+        firebase_initialized = True
+        logger.info("Firebase initialized successfully.")
+    except Exception as e:
+        logger.error(f"Firebase init error: {e}")
+
+def get_tokens():
+    tokens = []
+    single_token = os.getenv("BOT_TOKEN")
+    if single_token and single_token.strip():
+        tokens.append((1, single_token.strip()))
+
+    for i in range(1, 50):
+        token = os.getenv(f"BOT_TOKEN_{i}")
+        if token and token.strip():
+            tokens.append((i, token.strip()))
+
+    unique_tokens = []
+    seen = set()
+    for idx, tok in tokens:
+        if tok not in seen:
+            seen.add(tok)
+            unique_tokens.append((idx, tok))
+
+    return unique_tokens
+
+# =========================================================
+# BOT HANDLERS & MULTI-REACTION
+# =========================================================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat:
+        return
+
+    bot_username = context.bot.username or "ReactionBot"
+    welcome_text = (
+        f"<b>Hey! Welcome to Multi-Reaction Bot</b> 👋\n\n"
+        f"অ্যাডমিন হিসেবে আমাকে এবং আমার অ্যাসিস্ট্যান্ট বটগুলোকে আপনার চ্যানেলে যুক্ত করুন।\n"
+        f"নতুন পোস্ট হওয়ার সাথে সাথে অটোমেটিক মাল্টিপল রিঅ্যাকশন যুক্ত হবে! ✨"
     )
 
-@bot.on_message(filters.command("addsession"))
-async def add_session_cmd(client, message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return
+    keyboard = [
+        [
+            InlineKeyboardButton("ADD TO CHANNEL", url=f"https://t.me/{bot_username}?startchannel=true"),
+            InlineKeyboardButton("ADD TO GROUP", url=f"https://t.me/{bot_username}?startgroup=true")
+        ],
+        [InlineKeyboardButton("Support Channel", url=SUPPORT_URL)]
+    ]
+
     try:
-        session_str = message.text.split(" ", 1)[1].strip()
-        add_session_to_db(session_str)
-        total_sessions = len(get_sessions())
-        await message.reply_text(f"✅ <b>নতুন Session String যুক্ত করা হয়েছে!</b>\n📊 সেশন: <code>{total_sessions}</code> টি")
-    except IndexError:
-        await message.reply_text("⚠️ <b>সঠিক নিয়ম:</b> <code>/addsession &lt;your_session_string&gt;</code>")
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=IMAGE_URL,
+            caption=welcome_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception:
+        await update.message.reply_text(
+            text=welcome_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-@bot.on_message(filters.command("stats"))
-async def stats_cmd(client, message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return
-    total = len(get_sessions())
-    await message.reply_text(f"📊 <b>ফায়ারবেসে মোট সেশন সংখ্যা:</b> <code>{total}</code>")
-
-@bot.on_message(filters.text & filters.private)
-async def handle_steps(client, message):
-    user_id = message.from_user.id
-    text = message.text.strip()
-    
-    if not is_admin(user_id) or text.startswith("/"): return
-        
-    if user_id not in user_data or "step" not in user_data[user_id]:
-        await message.reply_text("কমান্ড রি-স্টার্ট করতে /start চাপুন।")
+async def set_reactions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """কাস্টম ইমোজি সেট করার কমান্ড: /set_reactions ❤️ 🔥 👍"""
+    if not update.effective_chat or update.effective_chat.type == "private":
+        await update.message.reply_text("এই কমান্ডটি চ্যানেলে বা গ্রুপে ব্যবহার করুন।")
         return
 
-    step = user_data[user_id]["step"]
+    args = context.args
+    if not args:
+        await update.message.reply_text("ইমোজি উল্লেখ করুন। উদাহরণ: <code>/set_reactions ❤️ 🔥 👍</code>", parse_mode="HTML")
+        return
 
-    if step == "WAITING_LINK":
-        chat_id, msg_id = parse_tg_link(text)
-        if not chat_id:
-            await message.reply_text("❌ অবৈধ লিঙ্ক!")
-            return
-        user_data[user_id].update({"link": text, "chat_id": chat_id, "msg_id": msg_id, "step": "WAITING_VIEWS"})
-        await message.reply_text("👁️ কতগুলো <b>View</b> প্রয়োজন? (সংখ্যায় লিখুন):")
+    chat_id = str(update.effective_chat.id)
+    custom_emojis = [e for e in args if len(e) <= 4] # Basic emoji filtering
 
-    elif step == "WAITING_VIEWS":
-        if not text.isdigit(): return await message.reply_text("❌ সংখ্যা লিখুন।")
-        views = int(text)
-        total_sessions = len(get_sessions())
-        if views > total_sessions:
-            return await message.reply_text(f"⚠️ ডাটাবেজে মাত্র <code>{total_sessions}</code> টি সেশন আছে!")
-        user_data[user_id].update({"views": views, "step": "WAITING_REACTIONS"})
-        await message.reply_text(f"👍 কতগুলো <b>Reaction</b> প্রয়োজন? (সর্বোচ্চ <code>{views}</code>, শুধু View চাইলে 0 লিখুন):")
+    if firebase_initialized:
+        db.reference(f"custom_reactions/{chat_id}").set(custom_emojis)
 
-    elif step == "WAITING_REACTIONS":
-        if not text.isdigit(): return await message.reply_text("❌ সংখ্যা লিখুন।")
-        reactions = int(text)
-        views = user_data[user_id]["views"]
-        if reactions > views:
-            return await message.reply_text(f"❌ Reaction <code>{reactions}</code> কখনো View <code>{views}</code> এর বেশি হতে পারবে না।")
-        user_data[user_id]["reactions"] = reactions
-        
-        if reactions == 0:
-            await start_execution(client, message, user_id, emoji=None)
-        else:
-            user_data[user_id]["step"] = "WAITING_EMOJI"
-            await message.reply_text("😍 কোন Emoji রিঅ্যাকশন দিতে চান? (যেমন: 👍, 🔥, ❤️):")
+    await update.message.reply_text(f"✅ কাস্টম রিঅ্যাকশন সেট করা হয়েছে: {' '.join(custom_emojis)}")
 
-    elif step == "WAITING_EMOJI":
-        await start_execution(client, message, user_id, emoji=text)
+async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.channel_post or update.message
+    if not target or not update.effective_chat:
+        return
 
-# ----------------- EXECUTION LOGIC ----------------- #
-async def start_execution(client, message, user_id, emoji=None):
-    data = user_data.get(user_id)
-    chat_id, msg_id, views, reactions = data["chat_id"], data["msg_id"], data["views"], data["reactions"]
-    user_data[user_id] = {}
-    status_msg = await message.reply_text("⏳ কাজ প্রসেস হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
-    
-    sessions = get_sessions()
-    is_group = False
-    try:
-        chat_info = await client.get_chat(chat_id)
-        if chat_info.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]: is_group = True
-    except: pass
+    chat_id = str(update.effective_chat.id)
+    allowed_emojis = DEFAULT_EMOJIS
 
-    success_views, success_reactions = 0, 0
-
-    for i in range(views):
-        session_str = sessions[i]
-        do_react = (i < reactions)
+    # Firebase থেকে কাস্টম ইমোজি লোড করার চেষ্টা
+    if firebase_initialized:
         try:
-            async with Client(f"temp_ub_{i}", api_id=API_ID, api_hash=API_HASH, session_string=session_str, in_memory=True) as ub:
-                if not is_group:
-                    try:
-                        await ub.read_chat_history(chat_id)
-                        peer = await ub.resolve_peer(chat_id)
-                        await ub.invoke(functions.messages.GetMessagesViews(peer=peer, id=[msg_id], increment=True))
-                        success_views += 1
-                    except: pass
-                
-                if do_react and emoji:
-                    try:
-                        await ub.send_reaction(chat_id, msg_id, emoji)
-                        success_reactions += 1
-                        if is_group: success_views += 1 
-                    except: pass
+            custom_data = db.reference(f"custom_reactions/{chat_id}").get()
+            if custom_data and isinstance(custom_data, list):
+                allowed_emojis = custom_data
         except Exception as e:
-            print(f"Session {i} Error: {e}")
-        await asyncio.sleep(0.3) 
+            logger.warning(f"Failed to fetch custom reactions: {e}")
 
-    report = "✅ <b>কাজ সম্পন্ন হয়েছে!</b>\n\n"
-    if is_group:
-        report += f"👥 <b>টাইপ:</b> গ্রুপ\n👍 <b>সাফল্য রিঅ্যাকশন:</b> <code>{success_reactions}/{reactions}</code>"
-    else:
-        report += f"📢 <b>টাইপ:</b> চ্যানেল\n👁️ <b>সাফল্য ভিউ:</b> <code>{success_views}/{views}</code>\n👍 <b>সাফল্য রিঅ্যাকশন:</b> <code>{success_reactions}/{reactions}</code>"
-    await status_msg.edit_text(report)
+    await asyncio.sleep(random.uniform(0.1, 0.8))
+    selected_emoji = random.choice(allowed_emojis)
 
-# ----------------- MAIN RUNNER ----------------- #
+    try:
+        await context.bot.set_message_reaction(
+            chat_id=target.chat_id,
+            message_id=target.message_id,
+            reaction=selected_emoji,
+            is_big=True
+        )
+    except RetryAfter as e:
+        await asyncio.sleep(int(e.retry_after))
+        try:
+            await context.bot.set_message_reaction(
+                chat_id=target.chat_id,
+                message_id=target.message_id,
+                reaction=selected_emoji,
+                is_big=True
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"Reaction failed: {e}")
+
+# =========================================================
+# BOT BUILDER & ENGINE
+# =========================================================
+
+async def build_bot(token_index, token):
+    app = Application.builder().token(token).concurrent_updates(True).build()
+    await app.initialize()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("set_reactions", set_reactions_command))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL | filters.ChatType.GROUPS, handle_incoming))
+
+    return app
+
 async def main():
-    await bot.start()
-    print("✅ Bot started successfully!")
-    await idle()
-    await bot.stop()
+    init_firebase()
+    tokens = get_tokens()
+
+    if not tokens:
+        logger.error("No BOT_TOKEN or BOT_TOKEN_1 found in environment variables!")
+        return
+
+    logger.info(f"Starting Multi-Bot Engine with {len(tokens)} token(s)...")
+    apps = []
+
+    for token_index, token in tokens:
+        try:
+            app = await build_bot(token_index, token)
+            await app.start()
+
+            if app.updater:
+                await app.updater.start_polling(drop_pending_updates=True)
+                apps.append(app)
+                logger.info(f"Bot #{token_index} running as @{app.bot.username}")
+        except Exception as e:
+            logger.error(f"Failed to start Bot #{token_index}: {e}")
+
+    if apps:
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    loop.run_until_complete(main())
+    asyncio.run(main())
