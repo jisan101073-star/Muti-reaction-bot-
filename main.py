@@ -7,6 +7,14 @@ from firebase_admin import credentials, db
 from pyrogram import Client, filters, enums, idle
 from pyrogram.raw import functions
 
+# ----------------- FIX FOR PYTHON 3.10+ / 3.12+ / 3.14+ ----------------- #
+# Pyrogram 'bot = Client(...)' রান করার আগেই Event Loop তৈরি করা আবশ্যক
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 # ----------------- ENVIRONMENT VARIABLES ----------------- #
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
@@ -17,7 +25,7 @@ FIREBASE_CRED_JSON = os.getenv("FIREBASE_CRED", "")  # Full JSON string of Fireb
 # ADMIN AUTHORIZATION (আপনার টেলিগ্রাম আইডি)
 ADMIN_IDS = [8223664417]
 
-# Env থেকে অতিরিক্ত অ্যাডমিন আইডি যুক্ত করার অপশন (ইচ্ছা হলে)
+# Env থেকে অতিরিক্ত অ্যাডমিন আইডি যুক্ত করার অপশন
 env_admins = os.getenv("ADMIN_IDS", "")
 if env_admins:
     for x in env_admins.split(","):
@@ -296,7 +304,7 @@ async def start_execution(client, message, user_id, emoji=None):
 
     await status_msg.edit_text(report)
 
-# ----------------- MODERN ASYNC RUNNER ----------------- #
+# ----------------- MAIN RUNNER ----------------- #
 async def main():
     await bot.start()
     print("✅ Bot started successfully!")
@@ -304,4 +312,4 @@ async def main():
     await bot.stop()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop.run_until_complete(main())
