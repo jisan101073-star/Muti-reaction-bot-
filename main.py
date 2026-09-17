@@ -251,7 +251,7 @@ async def start_execution(client, message, user_id, emoji=None):
         do_react = (i < reactions)
         
         try:
-            async with Client("temp_userbot", api_id=API_ID, api_hash=API_HASH, session_string=session_str, in_memory=True) as ub:
+            async with Client(f"temp_userbot_{i}", api_id=API_ID, api_hash=API_HASH, session_string=session_str, in_memory=True) as ub:
                 
                 # ১. চ্যানেল হলে ভিউ করবে
                 if not is_group:
@@ -296,7 +296,8 @@ async def start_execution(client, message, user_id, emoji=None):
 
     await status_msg.edit_text(report)
 
-# ----------------- BOT RUN ----------------- #
+# ----------------- BOT RUN (FIXED EVENT LOOP) ----------------- #
 if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     bot.run()
-  
