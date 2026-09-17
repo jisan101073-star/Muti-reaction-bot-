@@ -4,8 +4,6 @@ import json
 import asyncio
 
 # ----------------- CRITICAL FIX FOR PYTHON 3.14+ ----------------- #
-# Pyrogram বা অন্য কিছু ইমপোর্ট করার আগেই সরাসরি নতুন Event Loop সেট করতে হবে
-# কোনো get_event_loop() ব্যবহার করা যাবে না
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
@@ -20,7 +18,7 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 FIREBASE_URL = os.getenv("FIREBASE_URL", "")
-FIREBASE_CRED_JSON = os.getenv("FIREBASE_CRED", "")  # Full JSON string
+FIREBASE_CRED_JSON = os.getenv("FIREBASE_CRED", "")
 
 # ADMIN AUTHORIZATION
 ADMIN_IDS = [8223664417]
@@ -43,15 +41,15 @@ try:
 except Exception as e:
     print(f"❌ Firebase initialization failed: {e}")
 
-# ----------------- BOT CLIENT ----------------- #
+# ----------------- BOT CLIENT (HTML Parse Mode Added) ----------------- #
 bot = Client(
     "reaction_view_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    parse_mode=enums.ParseMode.HTML
 )
 
-# User state storage for multi-step input
 user_data = {}
 
 def get_sessions():
@@ -93,15 +91,15 @@ def is_admin(user_id: int) -> bool:
 async def start_cmd(client, message):
     user_id = message.from_user.id
     if not is_admin(user_id):
-        await message.reply_text("❌ **Access Denied!**")
+        await message.reply_text("❌ <b>Access Denied!</b>")
         return
 
     user_data[user_id] = {"step": "WAITING_LINK"}
     total_sessions = len(get_sessions())
     await message.reply_text(
-        f"👋 **Reaction & View Bot-এ স্বাগতম! (Admin Panel)**\n\n"
-        f"📊 **ডাটাবেজে মোট সেশন আছে:** `{total_sessions}` টি\n\n"
-        f"কাজ শুরু করতে আপনার **চ্যানেল বা পোস্টের লিঙ্ক** দিন:"
+        f"👋 <b>Reaction & View Bot-এ স্বাগতম! (Admin Panel)</b>\n\n"
+        f"📊 <b>ডাটাবেজে মোট সেশন আছে:</b> <code>{total_sessions}</code> টি\n\n"
+        f"কাজ শুরু করতে আপনার <b>চ্যানেল বা পোস্টের লিঙ্ক</b> দিন:"
     )
 
 @bot.on_message(filters.command("addsession"))
@@ -112,16 +110,16 @@ async def add_session_cmd(client, message):
         session_str = message.text.split(" ", 1)[1].strip()
         add_session_to_db(session_str)
         total_sessions = len(get_sessions())
-        await message.reply_text(f"✅ **নতুন Session String যুক্ত করা হয়েছে!**\n📊 সেশন: `{total_sessions}` টি")
+        await message.reply_text(f"✅ <b>নতুন Session String যুক্ত করা হয়েছে!</b>\n📊 সেশন: <code>{total_sessions}</code> টি")
     except IndexError:
-        await message.reply_text("⚠️ **সঠিক নিয়ম:** `/addsession <your_session_string>`")
+        await message.reply_text("⚠️ <b>সঠিক নিয়ম:</b> <code>/addsession &lt;your_session_string&gt;</code>")
 
 @bot.on_message(filters.command("stats"))
 async def stats_cmd(client, message):
     user_id = message.from_user.id
     if not is_admin(user_id): return
     total = len(get_sessions())
-    await message.reply_text(f"📊 **ফায়ারবেসে মোট সেশন সংখ্যা:** `{total}`")
+    await message.reply_text(f"📊 <b>ফায়ারবেসে মোট সেশন সংখ্যা:</b> <code>{total}</code>")
 
 @bot.on_message(filters.text & filters.private)
 async def handle_steps(client, message):
@@ -142,23 +140,23 @@ async def handle_steps(client, message):
             await message.reply_text("❌ অবৈধ লিঙ্ক!")
             return
         user_data[user_id].update({"link": text, "chat_id": chat_id, "msg_id": msg_id, "step": "WAITING_VIEWS"})
-        await message.reply_text("👁️ কতগুলো **View** প্রয়োজন? (সংখ্যায় লিখুন):")
+        await message.reply_text("👁️ কতগুলো <b>View</b> প্রয়োজন? (সংখ্যায় লিখুন):")
 
     elif step == "WAITING_VIEWS":
         if not text.isdigit(): return await message.reply_text("❌ সংখ্যা লিখুন।")
         views = int(text)
         total_sessions = len(get_sessions())
         if views > total_sessions:
-            return await message.reply_text(f"⚠️ ডাটাবেজে মাত্র `{total_sessions}` টি সেশন আছে!")
+            return await message.reply_text(f"⚠️ ডাটাবেজে মাত্র <code>{total_sessions}</code> টি সেশন আছে!")
         user_data[user_id].update({"views": views, "step": "WAITING_REACTIONS"})
-        await message.reply_text(f"👍 কতগুলো **Reaction** প্রয়োজন? (সর্বোচ্চ `{views}`, শুধু View চাইলে 0 লিখুন):")
+        await message.reply_text(f"👍 কতগুলো <b>Reaction</b> প্রয়োজন? (সর্বোচ্চ <code>{views}</code>, শুধু View চাইলে 0 লিখুন):")
 
     elif step == "WAITING_REACTIONS":
         if not text.isdigit(): return await message.reply_text("❌ সংখ্যা লিখুন।")
         reactions = int(text)
         views = user_data[user_id]["views"]
         if reactions > views:
-            return await message.reply_text(f"❌ Reaction `{reactions}` কখনো View `{views}` এর বেশি হতে পারবে না।")
+            return await message.reply_text(f"❌ Reaction <code>{reactions}</code> কখনো View <code>{views}</code> এর বেশি হতে পারবে না।")
         user_data[user_id]["reactions"] = reactions
         
         if reactions == 0:
@@ -209,11 +207,11 @@ async def start_execution(client, message, user_id, emoji=None):
             print(f"Session {i} Error: {e}")
         await asyncio.sleep(0.3) 
 
-    report = "✅ **কাজ সম্পন্ন হয়েছে!**\n\n"
+    report = "✅ <b>কাজ সম্পন্ন হয়েছে!</b>\n\n"
     if is_group:
-        report += f"👥 **টাইপ:** গ্রুপ\n👍 **সাফল্য রিঅ্যাকশন:** `{success_reactions}/{reactions}`"
+        report += f"👥 <b>টাইপ:</b> গ্রুপ\n👍 <b>সাফল্য রিঅ্যাকশন:</b> <code>{success_reactions}/{reactions}</code>"
     else:
-        report += f"📢 **টাইপ:** চ্যানেল\n👁️ **সাফল্য ভিউ:** `{success_views}/{views}`\n👍 **সাফল্য রিঅ্যাকশন:** `{success_reactions}/{reactions}`"
+        report += f"📢 <b>টাইপ:</b> চ্যানেল\n👁️ <b>সাফল্য ভিউ:</b> <code>{success_views}/{views}</code>\n👍 <b>সাফল্য রিঅ্যাকশন:</b> <code>{success_reactions}/{reactions}</code>"
     await status_msg.edit_text(report)
 
 # ----------------- MAIN RUNNER ----------------- #
@@ -224,5 +222,4 @@ async def main():
     await bot.stop()
 
 if __name__ == "__main__":
-    # শুরুতেই যে লুপ তৈরি করা হয়েছিল, সেটিতেই বোট রান করানো হচ্ছে
     loop.run_until_complete(main())
