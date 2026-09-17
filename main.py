@@ -4,7 +4,7 @@ import json
 import asyncio
 import firebase_admin
 from firebase_admin import credentials, db
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, idle
 from pyrogram.raw import functions
 
 # ----------------- ENVIRONMENT VARIABLES ----------------- #
@@ -296,8 +296,12 @@ async def start_execution(client, message, user_id, emoji=None):
 
     await status_msg.edit_text(report)
 
-# ----------------- BOT RUN (FIXED EVENT LOOP) ----------------- #
+# ----------------- MODERN ASYNC RUNNER ----------------- #
+async def main():
+    await bot.start()
+    print("✅ Bot started successfully!")
+    await idle()
+    await bot.stop()
+
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    bot.run()
+    asyncio.run(main())
